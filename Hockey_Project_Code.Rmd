@@ -1,0 +1,132 @@
+---
+title: "Hockey Project Code"
+author: "Riley Collins"
+date: "11/30/2023"
+output: html_document
+---
+
+```{R}
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(stringr)
+library(rvest)
+library(rstanarm)
+library(knitr)
+library(ggResidpanel)
+
+# Read in data files
+game <- read_csv("game.csv")
+game_goalie_stats <- read_csv("game_goalie_stats.csv")
+game_shifts <- read_csv("game_shifts.csv")
+game_skater_stats <- read_csv("game_skater_stats.csv")
+game_teams_stats <- read_csv("game_teams_stats.csv")
+player_info <- read_csv("player_info.csv")
+team_info <- read_csv("team_info.csv")
+
+# Match players between the stats and player info datasets
+game_goalie_stats <- merge(game_goalie_stats,player_info,by="player_id")
+game_skater_stats <- merge(game_skater_stats,player_info,by="player_id")
+
+# Calculate length of each shift as well as mean shift length for each player and game
+game_shifts$shift_length <- game_shifts$shift_end-game_shifts$shift_start
+game_shifts <- game_shifts %>%group_by(player_id,game_id) %>% summarise(mean_shift_length=mean(shift_length))
+
+# Add mean shift length to each player's row
+game_goalie_stats <- merge(game_goalie_stats,game_shifts,by=c("player_id","game_id"))
+game_skater_stats <- merge(game_skater_stats,game_shifts,by=c("player_id","game_id"))
+
+# Calculate year and age for every player
+game_goalie_stats$year <- substr(game_goalie_stats$game_id,1,4) 
+game_goalie_stats$age <- strtoi(game_goalie_stats$year)-strtoi(substr(game_goalie_stats$birthDate,1,4))
+game_skater_stats$year <- substr(game_skater_stats$game_id,1,4)
+game_skater_stats$age <- strtoi(game_skater_stats$year)-strtoi(substr(game_skater_stats$birthDate,1,4))
+
+# Find mode in a dataset
+find_mode <- function(x) {
+  u <- unique(x)
+  tab <- tabulate(match(x, u))
+  u[tab == max(tab)]
+}
+
+# Summarize statistics for season as opposed to displaying them for each game
+yearly_goalie_stats <- game_goalie_stats %>% group_by(player_id,year) %>% summarise(team_id=find_mode(team_id),timeOnIce=mean(timeOnIce),shots=mean(shots),saves=mean(saves),savePercentage=mean(savePercentage),powerPlaySavePercentage=mean(powerPlaySavePercentage),evenStrengthSavePercentage=mean(evenStrengthSavePercentage),primaryPosition=unique(primaryPosition),height_cm=mean(height_cm),weight=mean(weight),mean_shift_length=mean(mean_shift_length))
+
+yearly_skater_stats <- game_skater_stats %>% group_by(player_id,year) %>% summarise(team_id=find_mode(team_id),timeOnIce=mean(timeOnIce),assists=mean(assists),goals=mean(goals),shots=mean(shots),hits=mean(hits),faceoffWinPercent=mean(faceOffWins)/mean(faceoffTaken),takeaways=mean(takeaways),giveaways=mean(giveaways),primaryPosition=unique(primaryPosition),height_cm=mean(height_cm),weight=mean(weight),shootsCatches=unique(shootsCatches),mean_shift_length=mean(mean_shift_length),age=mean(age))
+
+# Plot Figures 1-5
+graph1 <- ggplot(data = yearly_skater_stats, aes(age,timeOnIce))
+graph1 + geom_jitter(alpha=0.1) + geom_smooth(method = 'loess') + 
+labs(x = 'Age (Years)', y = 'Time on Ice (Seconds)') + ggtitle('Age vs. Time on Ice') +
+labs(caption="Figure 1: Average time on ice per game for a given player over the course of a season plotted\n against age.")
+
+graph2 <- ggplot(data = yearly_skater_stats, aes(age,timeOnIce))
+graph2 + geom_jitter(aes(col=primaryPosition),alpha=0.3) + xlab('Age (Years)') + ylab('Mean Time on Ice (Seconds)') + ggtitle('Age vs. Mean Time on Ice by Position') + theme(plot.title = element_text(hjust = 0.5)) + scale_color_manual(name="Primary Position",values=c('red','green','blue','violet'),labels= c('Center','Defenseman', 'Left Wing','Right Wing')) + labs(caption="Figure 2: Average time on ice per game for a player plotted against age\n and sorted by position.") + facet_wrap(~primaryPosition)
+
+graph3 <- ggplot(yearly_skater_stats, aes(x=mean_shift_length, colour=primaryPosition, fill = primaryPosition))
+graph3 + geom_density(alpha=0.5,color=NA) + xlab('Mean Shift Length (Seconds)') + ylab('Density') + ggtitle('Mean Shift Length by Position') + scale_color_manual(name='Primary Position',values=c('red','green','blue','violet'),labels= c('Center','Defenseman', 'Left Wing','Right Wing')) + labs(caption="Figure 3: The mean shift lengths for players over an entire season\n are shown. Players are sorted by position.")
+
+# Only use data from 2018-19 season, group by team and position 
+# Calculate standard deviation of time on ice
+yearly_skater_stats_2019 <- subset(yearly_skater_stats,year==2019)
+team_stats_2019 <- yearly_skater_stats_2019 %>% group_by(team_id,primaryPosition) %>% summarise(sdtimeOnIce=sd(timeOnIce))
+
+graph4 <- ggplot(team_stats_2019,aes(x=sdtimeOnIce),fill=primaryPosition)
+graph4 + geom_histogram(alpha = 0.5, position = "identity",bins=15) + xlab('Standard Deviation') + ylab('Count') + ggtitle('Standard Deviation of Mean Time on Ice Per Game for \nPlayers of the Same Team and Position in 2019') + labs(caption="Figure 4: Players are grouped by team and position and the standard deviation of their mean times\n on ice per game are taken within each group.")
+
+# Add team standings to original team info dataset
+team_stats_2019 <- left_join(team_stats_2019,team_info,by='team_id')
+nhlstandings201819 <- read.csv("nhlstandings201819.csv")
+colnames(nhlstandings201819)[colnames(nhlstandings201819) == "Team"] ="shortName"
+team_stats_2019 <- left_join(team_stats_2019,nhlstandings201819,by='shortName')
+
+graph5 <- ggplot(data=team_stats_2019, aes(x=sdtimeOnIce,y=Points))
+graph5 + geom_jitter(aes(col=primaryPosition),alpha=0.3) + xlab('Standard Deviation of Time on Ice') + ylab('Points') + ggtitle('Playing Time Discrepancies vs. Team Points') + theme(plot.title = element_text(hjust = 0.5)) + scale_color_manual(name="Primary Position",values=c('red','green','blue','violet'),labels= c('Center','Defenseman', 'Left Wing','Right Wing')) + labs(caption="Figure 5: Players are grouped by team and position and the\n standard deviation of their mean times on ice per game are taken\n within each group. These are then plotted against total points\n scored by the corresponding team in the 2018-19 season.") + facet_wrap(~primaryPosition)
+
+# Run linear models for each position
+team_stats_2019_center <- subset(team_stats_2019,primaryPosition=='C')
+center_lm <- lm(Points~sdtimeOnIce,data=team_stats_2019_center)
+
+team_stats_2019_leftwing <- subset(team_stats_2019,primaryPosition=='LW')
+leftwing_lm <- lm(Points~sdtimeOnIce,data=team_stats_2019_leftwing)
+
+team_stats_2019_rightwing <-subset(team_stats_2019,primaryPosition=='RW')
+rightwing_lm <- lm(Points~sdtimeOnIce,data=team_stats_2019_rightwing)
+
+team_stats_2019_defenseman <-subset(team_stats_2019,primaryPosition=='D')
+defenseman_lm <- lm(Points~sdtimeOnIce,data=team_stats_2019_defenseman)
+
+# Calculate correlations between points and sdTimeOnIce for each position
+cor(team_stats_2019_center$Points,team_stats_2019_center$sdtimeOnIce)
+cor(team_stats_2019_leftwing$Points,team_stats_2019_leftwing$sdtimeOnIce)
+cor(team_stats_2019_rightwing$Points,team_stats_2019_rightwing$sdtimeOnIce)
+cor(team_stats_2019_defenseman$Points,team_stats_2019_defenseman$sdtimeOnIce)
+
+# Write table for correlations between points and sdTimeOnIce
+tab1 <- matrix(c("Center", "Left Wing", "Right Wing", "Defenseman", 0.0759, 0.1739, 0.0132, 0.1135),nrow = 4)
+colnames(tab1) <- c("Position", "Correlation")
+kable(tab1, caption = "Correlations between team points and the standard deviation of time on ice per game.")
+
+# Tables displaying results from the four models
+tab2 <- matrix(c("Intercept", "sdTimeonIce", 86.1588, 0.0192, "(62.7182, 109.5994)", "(-0.0768, 0.1152)"),nrow = 2)
+colnames(tab2) <- c("Parameter", "Point Estimate", "95% CI")
+kable(tab2, caption = "Parameter estimates and 95% confidence intervals for the center model.")
+
+tab3 <- matrix(c("Intercept", "sdTimeonIce", 83.7074, 0.0359, "(67.7661, 99.6488)", "(-0.0413, 0.1130)"),nrow = 2)
+colnames(tab3) <- c("Parameter", "Point Estimate", "95% CI")
+kable(tab3, caption = "Parameter estimates and 95% confidence intervals for the left wing model.")
+
+tab4 <- matrix(c("Intercept", "sdTimeonIce", 90.2526, 0.0022, "(75.2987, 105.2065)", "(-0.0605, 0.0648)"),nrow = 2)
+colnames(tab4) <- c("Parameter", "Point Estimate", "95% CI")
+kable(tab4, caption = "Parameter estimates and 95% confidence intervals for the right wing model.")
+
+tab5 <- matrix(c("Intercept", "sdTimeonIce", 85.0285, 0.0228, "(65.3737, 104.6832)", "(-0.0529, 0.0984)"),nrow = 2)
+colnames(tab5) <- c("Parameter", "Point Estimate", "95% CI")
+kable(tab5, caption = "Parameter estimates and 95% confidence intervals for the defenseman model.")
+
+# Residual plots for the four models
+resid_panel(center_lm,plots='default', smoother = T, qqbands = T)
+resid_panel(leftwing_lm,plots='default', smoother = T, qqbands = T)
+resid_panel(rightwing_lm,plots='default', smoother = T, qqbands = T)
+resid_panel(defenseman_lm,plots='default', smoother = T, qqbands = T)
+```
